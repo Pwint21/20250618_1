@@ -1316,6 +1316,7 @@
       <DependentUpon>ReprocessOSSJobAll.aspx</DependentUpon>
       <SubType>ASPXCodeBehind</SubType>
     </Compile>
+    <Compile Include="SecurityHelper.vb" />
     <Compile Include="ServiceingLogJson.aspx.designer.vb">
       <DependentUpon>ServiceingLogJson.aspx</DependentUpon>
     </Compile>
