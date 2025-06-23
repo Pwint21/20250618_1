@@ -19,12 +19,42 @@ Partial Class GussmannMaps
     Public errormessage As String = ""
 
     Protected Sub Page_Load(ByVal sender As Object, ByVal e As System.EventArgs) Handles Me.Load
-        Dim reqfrom As String = ""
-        reqfrom = Request.QueryString("from")
-        If reqfrom <> "Client" Then
-            x = System.Convert.ToInt32(Request.QueryString("x"))
-            y = System.Convert.ToInt32(Request.QueryString("y"))
-            z = System.Convert.ToInt32(Request.QueryString("z"))
+        Try
+            ' SECURITY FIX: Validate user session for non-client requests
+            Dim reqfrom As String = SecurityHelper.HtmlEncode(Request.QueryString("from"))
+            
+            If reqfrom <> "Client" Then
+                If Not SecurityHelper.ValidateUserSession(Request, Session) Then
+                    Response.StatusCode = 401
+                    Response.Write("Unauthorized")
+                    Return
+                End If
+            End If
+
+            ' SECURITY FIX: Validate coordinate parameters
+            Dim xStr As String = Request.QueryString("x")
+            Dim yStr As String = Request.QueryString("y")
+            Dim zStr As String = Request.QueryString("z")
+
+            If Not Integer.TryParse(xStr, x) OrElse Not Integer.TryParse(yStr, y) OrElse Not Integer.TryParse(zStr, z) Then
+                Response.StatusCode = 400
+                Response.Write("Invalid coordinates")
+                Return
+            End If
+
+            ' SECURITY FIX: Validate coordinate ranges
+            If x < 0 OrElse y < 0 OrElse z < 0 OrElse z > 20 Then
+                Response.StatusCode = 400
+                Response.Write("Coordinates out of range")
+                Return
+            End If
+
+            ' SECURITY FIX: Rate limiting
+            If SecurityHelper.IsRateLimited(Request.UserHostAddress, 100, 1) Then
+                Response.StatusCode = 429
+                Response.Write("Rate limit exceeded")
+                Return
+            End If
 
             map = New AspMap.Map()
             Dim size As Int64 = Math.Pow(2, z) * 256
@@ -36,51 +66,39 @@ Partial Class GussmannMaps
             tempmap.Width = 256
             tempmap.Height = 256
 
-
             If (Session("map") Is Nothing) Or (Session("MapRefresh") Is Nothing) Or (Session("MapRefresh") = "Y") Then
-
-                'ShowUserPoints()
-                'LoadPolygonGeofenceLayer()
-                'LoadCircleGeofenceLayer()
                 LoadGeofenceLayer()
-                If Request.QueryString("plateno") <> Nothing Then
-                    '  ShowVehicleRoute()
+                
+                ' SECURITY FIX: Validate plateno parameter
+                Dim plateno As String = SecurityHelper.HtmlEncode(Request.QueryString("plateno"))
+                If Not String.IsNullOrEmpty(plateno) AndAlso SecurityHelper.ValidatePlateNumber(plateno) Then
+                    ' Load vehicle route if plateno is valid
                 End If
 
                 Session("map") = tempmap
                 Session("MapRefresh") = "N"
-
             Else
                 tempmap = Session("map")
             End If
 
-            'tempmap("UserPoints1").Visible = True
-            Select Case Request.QueryString("l")
-                Case "1"
-                    tempmap("Geofence Layer").Visible = True
-                    'For poitype As Int16 = 1 To 55
-                    '    tempmap("UserPoints" & poitype).Visible = False
-                    'Next
-                Case "2"
-                    'For poitype As Int16 = 1 To 55
-                    '    tempmap("UserPoints" & poitype).Visible = True
-                    'Next
-                    tempmap("Geofence Layer").Visible = False
-                Case "3"
-                    tempmap("Geofence Layer").Visible = False
-                    'For poitype As Int16 = 1 To 55
-                    '    tempmap("UserPoints" & poitype).Visible = False
-                    'Next
-                Case Else
-                    tempmap("Geofence Layer").Visible = True
-                    'For poitype As Int16 = 1 To 55
-                    '    tempmap("UserPoints" & poitype).Visible = True
-                    'Next
-            End Select
-
+            ' SECURITY FIX: Validate layer parameter
+            Dim layerParam As String = SecurityHelper.HtmlEncode(Request.QueryString("l"))
+            If SecurityHelper.ValidateNumeric(layerParam, 1, 3) Then
+                Select Case layerParam
+                    Case "1"
+                        tempmap("Geofence Layer").Visible = True
+                    Case "2"
+                        tempmap("Geofence Layer").Visible = False
+                    Case "3"
+                        tempmap("Geofence Layer").Visible = False
+                    Case Else
+                        tempmap("Geofence Layer").Visible = True
+                End Select
+            Else
+                tempmap("Geofence Layer").Visible = True
+            End If
 
             Dim temprect As AspMap.Rectangle = New AspMap.Rectangle()
-
             temprect.Left = -180
             temprect.Top = 180
             temprect.Right = 180
@@ -91,14 +109,11 @@ Partial Class GussmannMaps
             map.Extent = temprect
 
             Dim rect As AspMap.Rectangle = New AspMap.Rectangle()
-
             point = map.ToMapPoint((x * 256), (y * 256))
-
             rect.Left = point.X
             rect.Top = point.Y
 
             point = map.ToMapPoint((x * 256 + 255), (y * 256 + 255))
-
             rect.Right = point.X
             rect.Bottom = point.Y
 
@@ -109,7 +124,6 @@ Partial Class GussmannMaps
             tempmap.ImageFormat = AspMap.ImageFormat.mcPNG
 
             Dim simg() As Byte = tempmap.Image
-
             Dim dimg((simg.Length - 1) + 13) As Byte
             Array.Copy(simg, dimg, 813)
             Dim mybytes() As Byte = {0, 0, 0, 1, 116, 82, 78, 83, 0, 64, 230, 216, 102}
@@ -118,414 +132,145 @@ Partial Class GussmannMaps
 
             Response.ContentType = "image/png"
             Response.BinaryWrite(dimg)
-        End If
-
-    End Sub
-
-
-    Sub ShowUserPoints()
-        Try
-            Dim userid As String = Request.Cookies("userinfo")("userid")
-            Dim role = Request.Cookies("userinfo")("role")
-            Dim userslist As String = Request.Cookies("userinfo")("userslist")
-
-            Dim conn As New SqlConnection(System.Configuration.ConfigurationManager.AppSettings("sqlserverconnection"))
-
-            Dim da As SqlDataAdapter = New SqlDataAdapter("select distinct(poiname) as location, lat as y, lon as x,poitype as type from poi_new", conn)
-
-            If role = "User" Then
-                da = New SqlDataAdapter("select distinct(poiname) as location, lat as y, lon as x,poitype as type from poi_new where userid='" & userid & "' and (accesstype=0 or accesstype=2)", conn)
-            ElseIf role = "SuperUser" Then
-                da = New SqlDataAdapter("select distinct(poiname) as location, lat as y, lon as x,poitype as type from poi_new where userid in(" & userslist & ") and (accesstype=0 or accesstype=2)", conn)
-            End If
-
-            Dim ds As New DataSet
-            da.Fill(ds)
-
-            Dim poipoints As AspMap.DynamicPoints
-            Dim dv As DataView
-
-            Dim latitude As Double = 0
-            Dim radians As Double = 0
-
-            For poitype As Int16 = 1 To 55
-
-                poipoints = New AspMap.DynamicPoints
-                dv = New DataView(ds.Tables(0), "type= " & poitype & "", "location", DataViewRowState.CurrentRows)
-
-                For i As Int32 = 0 To dv.Count - 1
-                    latitude = dv.Item(i).Row()("y")
-                    radians = latitude * (Math.PI / 180)
-                    latitude = (Math.Log(Math.Abs(Math.Tan(radians) + (1 / Math.Cos(radians)))) * 180) / Math.PI
-                    poipoints.AddPoint(dv.Item(i).Row()("x"), latitude, dv.Item(i).Row()("location"))
-                Next
-
-                poipoints.Type = LayerType.mcPointLayer
-
-                tempmap.AddLayer(poipoints)
-
-                Dim mlayer As AspMap.Layer
-                tempmap(0).Name = "UserPoints" & poitype
-
-                mlayer = tempmap.Layer("UserPoints" & poitype)
-                mlayer.ShowLabels = True
-
-                mlayer.Symbol.PointStyle = PointStyle.mcBitmapPoint
-                mlayer.Symbol.Bitmap = Server.MapPath("images/" & poitype & ".bmp")
-                mlayer.Symbol.TransparentColor = RGB(255, 255, 255)
-                mlayer.Symbol.Size = 20
-
-                mlayer.LabelFont.Antialias = True
-                mlayer.LabelFont.Name = "Tahoma"
-                mlayer.LabelFont.Size = 13
-                mlayer.LabelFont.Color = RGB(0, 0, 128)
-                mlayer.LabelFont.Outline = True
-
-                mlayer.Visible = True
-
-            Next
-        Catch ex As Exception
-
-        End Try
-
-    End Sub
-
-    Sub ShowVehicleRoute()
-
-        Dim plateno As String = Request.QueryString("plateno")
-        Dim begindatetime As String = Request.QueryString("bdt")
-        Dim enddatetime As String = Request.QueryString("edt")
-
-        If Not plateno = "" Then
-
-            Dim mlayer As AspMap.Layer
-
-            Dim conn As New SqlConnection(System.Configuration.ConfigurationManager.AppSettings("sqlserverconnection"))
-            Dim da As SqlDataAdapter
-            Dim ds As DataSet
-
-            'Vehicle Route Layer
-
-            da = New SqlDataAdapter("select distinct convert(varchar(19),timestamp,120) as datetime,lat as y,lon as x,ignition_sensor,bearing from vehicle_history where plateno ='" & plateno & "' and gps_av = 'A' and timestamp between '" & begindatetime & "' and '" & enddatetime & "'", conn)
-
-
-            ds = New DataSet
-            da.Fill(ds)
-
-            Dim vehicleroutepoints As New AspMap.DynamicPoints
-            Dim ignitiononpoints As New AspMap.DynamicPoints
-            Dim ignitionoffpoints As New AspMap.DynamicPoints
-
-            Dim latitude As Double = 0
-            Dim radians As Double = 0
-
-            If ds.Tables(0).Rows.Count > 0 Then
-                For i As Int64 = 0 To ds.Tables(0).Rows.Count - 1
-                    latitude = ds.Tables(0).Rows(i)("y")
-                    radians = latitude * (Math.PI / 180)
-                    latitude = (Math.Log(Math.Abs(Math.Tan(radians) + (1 / Math.Cos(radians)))) * 180) / Math.PI
-                    vehicleroutepoints.AddPoint(ds.Tables(0).Rows(i)("x"), latitude, ds.Tables(0).Rows(i)("datetime"))
-                    If ds.Tables(0).Rows(i)("ignition_sensor") = "1" Then
-                        ignitiononpoints.AddPoint(ds.Tables(0).Rows(i)("x"), latitude, ds.Tables(0).Rows(i)("datetime"))
-                    Else
-                        ignitionoffpoints.AddPoint(ds.Tables(0).Rows(i)("x"), latitude, ds.Tables(0).Rows(i)("datetime"))
-                    End If
-                Next
-            Else
-
-            End If
-            vehicleroutepoints.Type = LayerType.mcLineLayer
-
-            tempmap.AddLayer(vehicleroutepoints)
-
-            Dim vehicleroutelayer = tempmap.Layer(0)
-            vehicleroutelayer.ShowLabels = False
-
-            vehicleroutelayer.Symbol.LineStyle = LineStyle.mcDashRoadLine
-            vehicleroutelayer.Symbol.LineColor = RGB(198, 0, 0)
-            vehicleroutelayer.Symbol.InnerColor = RGB(244, 150, 92)
-            vehicleroutelayer.Symbol.Size = 4
-
-
-            'Vehicle Ignition ON Points Layer
-            ignitiononpoints.Type = LayerType.mcPointLayer
-
-            tempmap.AddLayer(ignitiononpoints)
-            tempmap(0).Name = "VehicleIgnitionOnPointsLayer"
-
-            mlayer = tempmap.Layer("VehicleIgnitionOnPointsLayer")
-            mlayer.ShowLabels = True
-
-            mlayer.Symbol.Size = 8
-            mlayer.Symbol.PointStyle = PointStyle.mcSquareWithSmallCenter
-            mlayer.Symbol.FillColor = RGB(0, 225, 0)
-            mlayer.Symbol.LineColor = RGB(10, 10, 10)
-            mlayer.Symbol.InnerColor = RGB(10, 10, 10)
-
-            mlayer.LabelFont.Antialias = True
-            mlayer.LabelFont.Name = "Verdana"
-            mlayer.LabelFont.Size = 13
-            mlayer.LabelFont.Color = RGB(0, 128, 0)
-            mlayer.LabelFont.Bold = True
-            mlayer.LabelFont.Outline = True
-
-            mlayer.Visible = True
-
-
-
-            'Vehicle Ignition OFF Points Layer
-            ignitionoffpoints.Type = LayerType.mcPointLayer
-
-            tempmap.AddLayer(ignitionoffpoints)
-            tempmap(0).Name = "VehicleIgnitionOffPointsLayer"
-
-            mlayer = tempmap.Layer("VehicleIgnitionOffPointsLayer")
-            mlayer.ShowLabels = True
-
-            mlayer.Symbol.Size = 8
-            mlayer.Symbol.PointStyle = PointStyle.mcSquareWithSmallCenter
-            mlayer.Symbol.FillColor = RGB(255, 0, 0)
-            mlayer.Symbol.LineColor = RGB(10, 10, 10)
-            mlayer.Symbol.InnerColor = RGB(10, 10, 10)
-
-            mlayer.LabelFont.Antialias = True
-            mlayer.LabelFont.Name = "Verdana"
-            mlayer.LabelFont.Size = 13
-            mlayer.LabelFont.Color = RGB(225, 0, 128)
-            mlayer.LabelFont.Bold = True
-            mlayer.LabelFont.Outline = True
-
-            mlayer.Visible = True
-
-        End If
-    End Sub
-
-    Sub LoadCircleGeofenceLayer()
-        Try
-            Dim userid As String = Request.Cookies("userinfo")("userid")
-            Dim role As String = Request.Cookies("userinfo")("role")
-            Dim userslist As String = Request.Cookies("userinfo")("userslist")
-            ' Dim connection As New Redirect(userid)
-
-            Dim conn As New SqlConnection(System.Configuration.ConfigurationManager.AppSettings("sqlserverconnection"))
-            Dim cmd As New SqlCommand("select geofencename as label,data from  geofence where geofencetype='0'", conn)
-
-            If role = "User" Then
-                cmd = New SqlCommand("select geofencename as label,data from  geofence where geofencetype='0' and userid='" & userid & "' Or (accesstype='1' and geofencetype='0')", conn)
-            ElseIf role = "SuperUser" Or role = "Operator" Then
-                cmd = New SqlCommand("select geofencename as label,data from  geofence where  geofencetype='0' userid in(" & userslist & ") Or (accesstype='1' and geofencetype='0')", conn)
-            End If
-
-            Dim dr As SqlDataReader
-
-            Dim circlepoints As New AspMap.DynamicPoints
-            circlepoints.Type = LayerType.mcPointLayer
-            Try
-                conn.Open()
-                dr = cmd.ExecuteReader()
-                Dim latitude As Double = 0
-                Dim radians As Double = 0
-                While dr.Read()
-                    Try
-                        latitude = dr("data").ToString().Split(",")(1)
-                        radians = latitude * (Math.PI / 180)
-                        latitude = (Math.Log(Math.Abs(Math.Tan(radians) + (1 / Math.Cos(radians)))) * 180) / Math.PI
-                        circlepoints.AddPoint(dr("data").ToString().Split(",")(0), latitude, dr("label"))
-                    Catch ex As Exception
-
-                    End Try
-                End While
-                conn.Close()
-            Catch ex As Exception
-
-            End Try
-            tempmap.AddLayer(circlepoints)
-
-            Dim mlayer As AspMap.Layer
-            tempmap(0).Name = "Circle"
-
-            mlayer = tempmap.Layer("Circle")
-            mlayer.ShowLabels = True
-            mlayer.LabelField = "label"
-
-            mlayer.LabelFont.Antialias = True
-            mlayer.LabelFont.Name = "Tahoma"
-            mlayer.LabelFont.Size = 13
-            mlayer.LabelFont.Color = RGB(0, 0, 128)
-            mlayer.LabelFont.Outline = True
-            mlayer.LabelFont.Bold = True
-
-            mlayer.Visible = True
-
 
         Catch ex As Exception
-
-        End Try
-    End Sub
-
-    Sub LoadPolygonGeofenceLayer()
-        Try
-            Dim plateno As String = Request.QueryString("plateno")
-            Dim userid As String = Request.Cookies("userinfo")("userid")
-            Dim role As String = Request.Cookies("userinfo")("role")
-            Dim userslist As String = Request.Cookies("userinfo")("userslist")
-            ' Dim connection As New Redirect(userid)
-
-            Dim conn As New SqlConnection(System.Configuration.ConfigurationManager.AppSettings("sqlserverconnection"))
-            Dim cmd As New SqlCommand("select geofencename as label,data from  geofence where geofencetype='1'", conn)
-
-            If role = "User" Then
-                cmd = New SqlCommand("select geofencename as label,data from  geofence where geofencetype='1' and userid='" & userid & "' Or (geofencetype='1' and accesstype='1')", conn)
-            ElseIf role = "SuperUser" Or role = "Operator" Then
-                cmd = New SqlCommand("select geofencename as label,data from  geofence where  geofencetype='1' userid in(" & userslist & ") Or (geofencetype='1' and accesstype='1')", conn)
-            End If
-
-            Dim dr As SqlDataReader
-
-            Dim polygonpoints As New AspMap.DynamicPoints
-            polygonpoints.Type = LayerType.mcPointLayer
-            Try
-                conn.Open()
-                dr = cmd.ExecuteReader()
-                Dim latitude As Double = 0
-                Dim radians As Double = 0
-                While dr.Read()
-                    Try
-                        latitude = dr("data").ToString().Split(";")(0).Split(",")(1)
-                        radians = latitude * (Math.PI / 180)
-                        latitude = (Math.Log(Math.Abs(Math.Tan(radians) + (1 / Math.Cos(radians)))) * 180) / Math.PI
-                        polygonpoints.AddPoint(dr("data").ToString().Split(";")(0).Split(",")(0), latitude, dr("label"))
-                    Catch ex As Exception
-
-                    End Try
-                End While
-                conn.Close()
-            Catch ex As Exception
-
-            End Try
-            tempmap.AddLayer(polygonpoints)
-
-            Dim mlayer As AspMap.Layer
-            tempmap(0).Name = "Polygon"
-
-            mlayer = tempmap.Layer("Polygon")
-            mlayer.ShowLabels = True
-            mlayer.LabelField = "label"
-
-            mlayer.LabelFont.Antialias = True
-            mlayer.LabelFont.Name = "Tahoma"
-            mlayer.LabelFont.Size = 20
-            mlayer.LabelFont.Color = RGB(0, 0, 128)
-            mlayer.LabelFont.Outline = True
-            mlayer.LabelFont.Bold = True
-
-            mlayer.Visible = True
-
-        Catch ex As Exception
-
+            SecurityHelper.LogError("GussmannMaps error", ex, Server)
+            Response.StatusCode = 500
+            Response.Write("Internal server error")
         End Try
     End Sub
 
     Private Sub LoadGeofenceLayer()
         Try
-            Dim userid As String = Request.Cookies("userinfo")("userid")
-            Dim role As String = Request.Cookies("userinfo")("role")
-            Dim userslist As String = Request.Cookies("userinfo")("userslist")
-            ' Dim connection As New Redirect(userid)
+            ' SECURITY FIX: Get validated user information
+            Dim userid As String = SecurityHelper.ValidateAndGetUserId(Request)
+            Dim role As String = SecurityHelper.ValidateAndGetUserRole(Request)
+            Dim userslist As String = SecurityHelper.ValidateAndGetUsersList(Request)
 
-            Dim conn As New SqlConnection(System.Configuration.ConfigurationManager.AppSettings("sqlserverconnection"))
-            Dim cmd As New SqlCommand("select geofencename as label,data,geofencetype from  geofence", conn)
+            Using conn As New SqlConnection(System.Configuration.ConfigurationManager.ConnectionStrings("DefaultConnection").ConnectionString)
+                Dim cmd As SqlCommand
 
-            If role = "User" Then
-                cmd = New SqlCommand("select geofencename as label,data,geofencetype from  geofence where userid='" & userid & "' Or (accesstype='1')", conn)
-            ElseIf role = "SuperUser" Or role = "Operator" Then
-                cmd = New SqlCommand("select geofencename as label,data,geofencetype from  geofence where userid in(" & userslist & ") Or (accesstype='1')", conn)
-            End If
+                ' SECURITY FIX: Use parameterized queries based on role
+                If role = "User" Then
+                    cmd = New SqlCommand("SELECT geofencename as label, data, geofencetype FROM geofence WHERE userid = @userid OR accesstype = '1'", conn)
+                    cmd.Parameters.Add(SecurityHelper.CreateSqlParameter("@userid", userid, SqlDbType.Int))
+                ElseIf role = "SuperUser" Or role = "Operator" Then
+                    If Not String.IsNullOrEmpty(userslist) AndAlso SecurityHelper.IsValidUsersList(userslist) Then
+                        ' Create parameterized query for multiple user IDs
+                        Dim userIds() As String = userslist.Split(","c)
+                        Dim parameters As New List(Of String)
+                        cmd = New SqlCommand()
+                        
+                        For i As Integer = 0 To userIds.Length - 1
+                            Dim paramName As String = "@userid" & i
+                            parameters.Add(paramName)
+                            cmd.Parameters.Add(SecurityHelper.CreateSqlParameter(paramName, userIds(i).Trim(), SqlDbType.Int))
+                        Next
+                        
+                        Dim inClause As String = String.Join(",", parameters)
+                        cmd.CommandText = $"SELECT geofencename as label, data, geofencetype FROM geofence WHERE userid IN ({inClause}) OR accesstype = '1'"
+                        cmd.Connection = conn
+                    Else
+                        cmd = New SqlCommand("SELECT geofencename as label, data, geofencetype FROM geofence WHERE userid = @userid OR accesstype = '1'", conn)
+                        cmd.Parameters.Add(SecurityHelper.CreateSqlParameter("@userid", userid, SqlDbType.Int))
+                    End If
+                Else
+                    cmd = New SqlCommand("SELECT geofencename as label, data, geofencetype FROM geofence WHERE accesstype = '1'", conn)
+                End If
 
-            Dim dr As SqlDataReader
+                Dim dl As New AspMap.DynamicLayer
+                dl.LayerType = LayerType.mcPolygonLayer
 
-            Dim dl As New AspMap.DynamicLayer
-            dl.LayerType = LayerType.mcPolygonLayer
-
-            Try
                 conn.Open()
-                dr = cmd.ExecuteReader()
-                Dim latitude As Double = 0
-                Dim radians As Double = 0
-                While dr.Read()
-                    Try
-                        If Not dr("geofencetype") Then
-                            Dim lnltrd() As String = dr("data").ToString().Split(",")
-                            latitude = lnltrd(1)
-                            radians = latitude * (Math.PI / 180)
-                            latitude = (Math.Log(Math.Abs(Math.Tan(radians) + (1 / Math.Cos(radians)))) * 180) / Math.PI
+                Using dr As SqlDataReader = cmd.ExecuteReader()
+                    While dr.Read()
+                        Try
+                            Dim geofenceType As Boolean = Convert.ToBoolean(dr("geofencetype"))
+                            Dim data As String = dr("data").ToString()
+                            Dim label As String = SecurityHelper.HtmlEncode(dr("label").ToString())
 
-                            Dim circleshp As New AspMap.Shape()
-                            circleshp.MakeCircle(lnltrd(0), latitude, lnltrd(2) / (60 * 1852))
-                            dl.AddShape(circleshp, dr("label"))
-                            ' pointslayer.AddPoint(dr("data").ToString().Split(",")(0), latitude, dr("label"))
-                        Else
-                            Try
-                                Dim data As String = dr("data")
+                            If Not geofenceType Then
+                                ' Circle geofence
+                                Dim lnltrd() As String = data.Split(","c)
+                                If lnltrd.Length = 3 Then
+                                    Dim lat, lon As Double
+                                    Dim radius As Integer
+                                    
+                                    If Double.TryParse(lnltrd(1), lat) AndAlso Double.TryParse(lnltrd(0), lon) AndAlso Integer.TryParse(lnltrd(2), radius) Then
+                                        If SecurityHelper.ValidateCoordinate(lat.ToString(), lon.ToString()) AndAlso radius > 0 AndAlso radius < 50000 Then
+                                            Dim radians As Double = lat * (Math.PI / 180)
+                                            lat = (Math.Log(Math.Abs(Math.Tan(radians) + (1 / Math.Cos(radians)))) * 180) / Math.PI
+
+                                            Dim circleshp As New AspMap.Shape()
+                                            circleshp.MakeCircle(lon, lat, radius / (60 * 1852))
+                                            dl.AddShape(circleshp, label)
+                                        End If
+                                    End If
+                                End If
+                            Else
+                                ' Polygon geofence
                                 Dim ptslayer As New AspMap.Points
                                 Dim shp As New AspMap.Shape
                                 shp.ShapeType = ShapeType.mcPolygonShape
 
-                                Dim pots() As String = data.Split(";")
-                                Dim vals() As String
+                                Dim pots() As String = data.Split(";"c)
+                                Dim validPoints As Boolean = True
+                                
                                 For i As Integer = 0 To pots.Length - 1
-                                    vals = pots(i).Split(",")
-
-                                    latitude = vals(1)
-                                    radians = latitude * (Math.PI / 180)
-                                    latitude = (Math.Log(Math.Abs(Math.Tan(radians) + (1 / Math.Cos(radians)))) * 180) / Math.PI
-                                    ptslayer.AddPoint(vals(0), latitude)
+                                    Dim vals() As String = pots(i).Split(","c)
+                                    If vals.Length = 2 Then
+                                        Dim lat, lon As Double
+                                        If Double.TryParse(vals(1), lat) AndAlso Double.TryParse(vals(0), lon) Then
+                                            If SecurityHelper.ValidateCoordinate(lat.ToString(), lon.ToString()) Then
+                                                Dim radians As Double = lat * (Math.PI / 180)
+                                                lat = (Math.Log(Math.Abs(Math.Tan(radians) + (1 / Math.Cos(radians)))) * 180) / Math.PI
+                                                ptslayer.AddPoint(lon, lat)
+                                            Else
+                                                validPoints = False
+                                                Exit For
+                                            End If
+                                        Else
+                                            validPoints = False
+                                            Exit For
+                                        End If
+                                    Else
+                                        validPoints = False
+                                        Exit For
+                                    End If
                                 Next
-                                shp.AddPart(ptslayer)
-                                dl.AddShape(shp, dr("label"))
-                                ' pointslayer.AddPoint(shp.Centroid.X, latitude, dr("label"))
-                            Catch ex As Exception
+                                
+                                If validPoints AndAlso ptslayer.Count > 2 Then
+                                    shp.AddPart(ptslayer)
+                                    dl.AddShape(shp, label)
+                                End If
+                            End If
 
-                            End Try
+                        Catch ex As Exception
+                            SecurityHelper.LogError("Geofence processing error", ex, Server)
+                            Continue While
+                        End Try
+                    End While
+                End Using
+            End Using
 
-                        End If
-
-                    Catch ex As Exception
-
-                    End Try
-                End While
-                conn.Close()
-            Catch ex As Exception
-
-            End Try
             tempmap.AddLayer(dl)
-
             tempmap(0).Name = "Geofence Layer"
 
-            Dim mlayer As AspMap.Layer
-            mlayer = tempmap.Layer("Geofence Layer")
-
+            Dim mlayer As AspMap.Layer = tempmap.Layer("Geofence Layer")
             mlayer.ShowLabels = True
             mlayer.LabelField = "label"
-
             mlayer.Symbol.FillStyle = FillStyle.mcTransparentFill
             mlayer.Symbol.LineStyle = LineStyle.mcInvisibleLine
-
             mlayer.LabelFont.Antialias = True
             mlayer.LabelFont.Name = "Tahoma"
             mlayer.LabelFont.Size = 14
             mlayer.LabelFont.Color = RGB(0, 0, 128)
             mlayer.LabelFont.Outline = True
-
             mlayer.Visible = True
 
-            'mlayer.Opacity = 0.25
-
         Catch ex As Exception
-
+            SecurityHelper.LogError("LoadGeofenceLayer error", ex, Server)
         End Try
     End Sub
 
 End Class
-
-
