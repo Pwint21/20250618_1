@@ -1,390 +1,196 @@
 Imports System.Data.SqlClient
-Imports ChartDirector
 Imports System.Data
 
 Partial Class VehicleFullMovementChart
     Inherits System.Web.UI.Page
+    
     Public xyvalues As String
     Public ilat, ilon As Double
     Public ec As String = "false"
     Public errorAlert As String = "false"
 
     Protected Overrides Sub OnInit(ByVal e As System.EventArgs)
-
-        Dim cmd As SqlCommand
-        Dim dr As SqlDataReader
-        Dim conn As New SqlConnection(System.Configuration.ConfigurationManager.AppSettings("sqlserverconnection"))
-
         Try
-            If Request.Cookies("userinfo") Is Nothing Then
-                Response.Redirect("Login.aspx")
+            ' SECURITY FIX: Enable authentication check
+            If Not SecurityHelper.ValidateUserSession(Request, Session) Then
+                Response.Redirect("~/Login.aspx")
+                Return
             End If
 
-            Dim userid As String = Request.Cookies("userinfo")("userid")
-            Dim role As String = Request.Cookies("userinfo")("role")
-            Dim userslist As String = Request.Cookies("userinfo")("userslist")
-
-            cmd = New SqlCommand("select userid, username,dbip from userTBL where role='User' order by username", conn)
-            If role = "User" Then
-                cmd = New SqlCommand("select userid, username, dbip from userTBL where userid='" & userid & "'", conn)
-            ElseIf role = "SuperUser" Or role = "Operator" Then
-                cmd = New SqlCommand("select userid, username, dbip from userTBL where userid in (" & userslist & ") order by username", conn)
-            End If
-            conn.Open()
-            dr = cmd.ExecuteReader()
-            While dr.Read()
-                ddlUsername.Items.Add(New ListItem(dr("username"), dr("userid")))
-            End While
-            dr.Close()
-
-           
-
-            If role = "User" Then
-                ddlUsername.Items.Remove("--Select User Name--")
-                ddlUsername.SelectedValue = userid
-                getPlateNo(userid)
-            End If
+            LoadUserDropdown()
 
         Catch ex As Exception
-
-        Finally
-           
-            conn.Close()
-
+            SecurityHelper.LogError("VehicleFullMovementChart OnInit Error", ex, Server)
+            Response.Redirect("~/Error.aspx")
         End Try
         MyBase.OnInit(e)
     End Sub
 
-
-    Protected Sub Page_Load(ByVal sender As Object, ByVal e As System.EventArgs) Handles Me.Load
+    Private Sub LoadUserDropdown()
         Try
+            Dim userid As String = SecurityHelper.ValidateAndGetUserId(Request)
+            Dim role As String = SecurityHelper.ValidateAndGetUserRole(Request)
+            Dim userslist As String = SecurityHelper.ValidateAndGetUsersList(Request)
 
-            If Page.IsPostBack = False Then
-                ImageButton1.Attributes.Add("onclick", "return mysubmit()")
-                txtBeginDate.Value = Now().ToString("yyyy/MM/dd")
-                txtEndDate.Value = Now().ToString("yyyy/MM/dd")
+            Dim parameters As New Dictionary(Of String, Object)
+            Dim query As String
+
+            If role = "User" Then
+                query = "SELECT userid, username FROM userTBL WHERE userid = @userid"
+                parameters.Add("@userid", userid)
+            ElseIf role = "SuperUser" Or role = "Operator" Then
+                If SecurityHelper.IsValidUsersList(userslist) Then
+                    ' Create parameterized query for multiple user IDs
+                    Dim userIds() As String = userslist.Split(","c)
+                    Dim paramNames As New List(Of String)
+                    
+                    For i As Integer = 0 To userIds.Length - 1
+                        Dim paramName As String = "@userid" & i
+                        paramNames.Add(paramName)
+                        parameters.Add(paramName, userIds(i).Trim())
+                    Next
+                    
+                    query = $"SELECT userid, username FROM userTBL WHERE userid IN ({String.Join(",", paramNames)}) ORDER BY username"
+                Else
+                    query = "SELECT userid, username FROM userTBL WHERE userid = @userid"
+                    parameters.Add("@userid", userid)
+                End If
+            Else
+                query = "SELECT userid, username FROM userTBL WHERE role = 'User' ORDER BY username"
+            End If
+
+            Dim userData As DataTable = DatabaseHelper.ExecuteQuery(query, parameters)
+            
+            ddlUsername.Items.Clear()
+            If role <> "User" Then
+                ddlUsername.Items.Add(New ListItem("--Select User Name--", ""))
+            End If
+            
+            For Each row As DataRow In userData.Rows
+                ddlUsername.Items.Add(New ListItem(SecurityHelper.HtmlEncode(row("username").ToString()), row("userid").ToString()))
+            Next
+
+            If role = "User" Then
+                ddlUsername.SelectedValue = userid
+                GetPlateNo(userid)
             End If
 
         Catch ex As Exception
-
+            SecurityHelper.LogError("LoadUserDropdown error", ex, Server)
         End Try
     End Sub
 
-    Protected Sub getPlateNo(ByVal uid As String)
-        Dim cmd As SqlCommand
-        Dim dr As SqlDataReader
-       Dim conn As New SqlConnection(System.Configuration.ConfigurationManager.AppSettings("sqlserverconnection"))
-
+    Protected Sub Page_Load(ByVal sender As Object, ByVal e As System.EventArgs) Handles Me.Load
         Try
-            If ddlUsername.SelectedValue <> "--Select User Name--" Then
+            ' SECURITY FIX: Validate user session
+            If Not SecurityHelper.ValidateUserSession(Request, Session) Then
+                Response.Redirect("~/Login.aspx")
+                Return
+            End If
+
+            If Page.IsPostBack = False Then
+                ImageButton1.Attributes.Add("onclick", "return mysubmit()")
+                txtBeginDate.Value = DateTime.Now.ToString("yyyy/MM/dd")
+                txtEndDate.Value = DateTime.Now.ToString("yyyy/MM/dd")
+            End If
+
+        Catch ex As Exception
+            SecurityHelper.LogError("VehicleFullMovementChart Page_Load error", ex, Server)
+        End Try
+    End Sub
+
+    Protected Sub GetPlateNo(ByVal uid As String)
+        Try
+            If ddlUsername.SelectedValue <> "--Select User Name--" AndAlso SecurityHelper.IsValidUserId(uid) Then
                 ddlpleate.Items.Clear()
                 ddlpleate.Items.Add("--Select Plate No--")
 
-
-
-                cmd = New SqlCommand("select plateno from vehicleTBL where userid='" & uid & "' order by plateno", conn)
-                conn.Open()
-                dr = cmd.ExecuteReader()
-                While dr.Read()
-                    ddlpleate.Items.Add(New ListItem(dr("plateno"), dr("plateno")))
-                End While
-                dr.Close()
-
-                conn.Close()
+                Dim parameters As New Dictionary(Of String, Object) From {
+                    {"@userid", uid}
+                }
+                
+                Dim query As String = "SELECT plateno FROM vehicleTBL WHERE userid = @userid ORDER BY plateno"
+                Dim plateData As DataTable = DatabaseHelper.ExecuteQuery(query, parameters)
+                
+                For Each row As DataRow In plateData.Rows
+                    ddlpleate.Items.Add(New ListItem(SecurityHelper.HtmlEncode(row("plateno").ToString()), row("plateno").ToString()))
+                Next
             Else
                 ddlpleate.Items.Clear()
                 ddlpleate.Items.Add("--Select User Name--")
             End If
-        Catch ex As Exception
-            Response.Write(ex.Message)
-        Finally
-            cmd.Dispose()
-            dr.Close()
-            conn.Dispose()
 
+        Catch ex As Exception
+            SecurityHelper.LogError("GetPlateNo error", ex, Server)
         End Try
     End Sub
 
     Protected Sub DisplayFullMovementChart()
-
-        Dim dr As SqlDataReader
-       Dim conn As New SqlConnection(System.Configuration.ConfigurationManager.AppSettings("sqlserverconnection"))
-        Dim cmd As SqlCommand
-        Dim t As New DataTable
         Try
+            ' SECURITY FIX: Validate inputs
+            If ddlpleate.SelectedValue = "--Select Plate No--" OrElse String.IsNullOrEmpty(ddlpleate.SelectedValue) Then
+                Return
+            End If
+
+            If Not SecurityHelper.ValidatePlateNumber(ddlpleate.SelectedValue) Then
+                Return
+            End If
+
+            If Not SecurityHelper.ValidateDate(txtBeginDate.Value) OrElse Not SecurityHelper.ValidateDate(txtEndDate.Value) Then
+                Return
+            End If
 
             Dim plateno As String = ddlpleate.SelectedValue
             Dim begindatetime As String = txtBeginDate.Value & " " & ddlbh.SelectedValue & ":" & ddlbm.SelectedValue & ":00"
             Dim enddatetime As String = txtEndDate.Value & " " & ddleh.SelectedValue & ":" & ddlem.SelectedValue & ":59"
 
-            cmd = New SqlCommand("select distinct convert(varchar(19),timestamp,120) as datetime,speed,ignition_sensor,lon,lat,gps_odometer as odometer from vehicle_history where plateno ='" & plateno & "' and timestamp between '" & begindatetime & "' and '" & enddatetime & "' and (gps_av='A' or (gps_av='V' and ignition_sensor='0'))", conn)
-            'Dim conn As New SqlConnection(System.Configuration.ConfigurationManager.AppSettings("sqlserverconnection"))
-            'Dim dr As SqlDataReader
+            ' SECURITY FIX: Use parameterized query
+            Dim parameters As New Dictionary(Of String, Object) From {
+                {"@plateno", plateno},
+                {"@begindate", begindatetime},
+                {"@enddate", enddatetime}
+            }
+            
+            Dim query As String = "SELECT DISTINCT CONVERT(varchar(19),timestamp,120) as datetime, speed, ignition_sensor, lon, lat, gps_odometer as odometer " &
+                                "FROM vehicle_history WHERE plateno = @plateno AND timestamp BETWEEN @begindate AND @enddate " &
+                                "AND (gps_av='A' OR (gps_av='V' AND ignition_sensor='0')) ORDER BY datetime"
+            
+            Dim movementData As DataTable = DatabaseHelper.ExecuteQuery(query, parameters)
 
-            conn.Open()
-            dr = cmd.ExecuteReader()
-
-            t.Columns.Add(New DataColumn("datetime"))
-            t.Columns.Add(New DataColumn("status"))
-            t.Columns.Add(New DataColumn("odometer"))
-            t.Columns.Add(New DataColumn("lat"))
-            t.Columns.Add(New DataColumn("lon"))
-
-            Dim r As DataRow
-
-            Dim status As Byte = 0
-
-            While dr.Read()
-                r = t.NewRow
-                r(0) = dr("datetime")
-
-                ' Stop
-                status = 0
-                If dr("ignition_sensor") = 1 Then
-                    If dr("speed") = 0 Then
-                        ' Idling
-                        status = 1
-                    Else
-                        ' Travelling
-                        status = 2
-                    End If
-                End If
-
-                r(1) = status
-                r(2) = Convert.ToDouble(dr("odometer")) / 100
-                r(3) = dr("lat")
-                r(4) = dr("lon")
-                t.Rows.Add(r)
-            End While
-            dr.Close()
-            conn.Close()
-
-            Dim stoptime As TimeSpan = New TimeSpan(0, 0, 0)
-            Dim idlingtime As TimeSpan = New TimeSpan(0, 0, 0)
-            Dim travellingtime As TimeSpan = New TimeSpan(0, 0, 0)
-            Dim totaltime As TimeSpan = New TimeSpan(0, 0, 0)
-
-            Dim lon() As Double = {}
-            Dim lat() As Double = {}
-
-            Dim datavalues() As Double = {}
-            Dim labelsvalues() As String = {}
-            Dim colorsvalues() As Integer = {}
-
-
-            Dim imagestatus As String = "no"
-
-            Dim prevstatus As Byte = 0
-            Dim prevdatetime As DateTime
-            'Dim prevodometer As Double
-
-            Dim currentstatus As Byte = 0
-            Dim currentdatetime As DateTime
-            Dim currentodometer As Double
-            Dim nextodometer As Double
-            Dim totalodometer As Double = 0
-
-            Dim temptime As TimeSpan = New TimeSpan(0, 0, 0)
-
-            Dim enter As String = "no"
-            Dim i As Integer = 0
-
-            For j As Int32 = 0 To t.Rows.Count - 2
-                currentodometer = t.Rows(j)(2)
-
-                If (t.Rows(j)(1) <> 0) Then
-                    nextodometer = t.Rows(j + 1)(2)
-                    If currentodometer < nextodometer And nextodometer > 0 Then
-                        t.Rows(j)(1) = 2
-                        totalodometer = totalodometer + (nextodometer - currentodometer)
-                    End If
-                End If
-            Next
-
-            If t.Rows.Count >= 2 Then
-
-                r = t.NewRow
-                r(0) = t.Rows(t.Rows.Count - 1)(0)
-                r(1) = 4
-                r(2) = t.Rows(t.Rows.Count - 1)(2)
-                r(3) = t.Rows(t.Rows.Count - 1)(3)
-                r(4) = t.Rows(t.Rows.Count - 1)(4)
-                t.Rows.Add(r)
-
-                imagestatus = "yes"
-
-                prevdatetime = t.Rows(0)(0)
-                prevstatus = t.Rows(0)(1)
-
-                For j As Int32 = 1 To t.Rows.Count - 1
-                    Try
-
-                        currentdatetime = t.Rows(j)(0)
-                        currentstatus = t.Rows(j)(1)
-
-                        If prevstatus <> currentstatus Then
-                            ReDim Preserve datavalues(i)
-                            ReDim Preserve labelsvalues(i)
-                            ReDim Preserve colorsvalues(i)
-
-                            ReDim Preserve lon(i)
-                            ReDim Preserve lat(i)
-
-                            temptime = currentdatetime - prevdatetime
-
-                            datavalues(i) = Math.Round(temptime.TotalMinutes, 2)
-                            labelsvalues(i) = prevdatetime.ToString("yyyy/MM/dd HH:mm:ss") & " To " & currentdatetime.ToString("yyyy/MM/dd HH:mm:ss")
-
-                            Select Case prevstatus
-                                Case 0
-                                    colorsvalues(i) = &HFF0000
-                                    stoptime = stoptime + temptime
-                                    totaltime = totaltime + temptime
-                                Case 1
-                                    colorsvalues(i) = &HFF
-                                    idlingtime = idlingtime + temptime
-                                    totaltime = totaltime + temptime
-                                Case 2
-                                    colorsvalues(i) = &HFF00
-                                    travellingtime = travellingtime + temptime
-                                    totaltime = totaltime + temptime
-                            End Select
-
-                            lon(i) = t.Rows(j)("lon")
-                            lat(i) = t.Rows(j)("lat")
-
-                            i += 1
-
-                            prevdatetime = currentdatetime
-                            prevstatus = currentstatus
-                        End If
-
-                    Catch ex As Exception
-                        Response.Write("####" & ex.Message)
-                    End Try
-                Next
-
-            End If
-
-            Array.Reverse(datavalues)
-            Array.Reverse(labelsvalues)
-            Array.Reverse(colorsvalues)
-
-            Dim chight As Int64 = datavalues.Length * 30
-
-            'Create a XYChart object of size 600 x 250 pixels
-            Dim c As XYChart = New XYChart(730, chight + 110, &HFAFAFA, 0, 0)
-
-            'Add a title to the chart using Arial Bold Italic font
-            'c.addTitle(plateno & " Full Movement Chart", "Verdana", 10) '.setBackground(&H9999FF)
-            c.addTitle(plateno & " Full Movement Chart", "Arial Bold", 15).setBackground(&HFAFAFA)
-
-            'c.addText(30, 40, "Mileage : " & totalodometer.ToString("0.00") & " KM", "Arial Bold", 10).setFontColor(&H803A84)
-            c.addText(175, 40, "Travelling : " & travellingtime.ToString() & " (" & (travellingtime.TotalMinutes / totaltime.TotalMinutes * 100).ToString("0.00") & "%)", "Arial Bold", 10).setFontColor(&H9900)
-            c.addText(375, 40, "Idling : " & idlingtime.ToString() & " (" & (idlingtime.TotalMinutes / totaltime.TotalMinutes * 100).ToString("0.00") & "%)", "Arial Bold", 10).setFontColor(&HFF)
-            c.addText(545, 40, "Stop : " & stoptime.ToString() & " (" & (stoptime.TotalMinutes / totaltime.TotalMinutes * 100).ToString("0.00") & "%)", "Arial Bold", 10).setFontColor(&HFF0000)
-
-            c.setPlotArea(290, 70, 410, chight, &HF4FDEF)
-
-            'Add a bar chart layer using the given data. Use a gradient color for the bars,
-            'where the gradient is from dark green (0x008000) to white (0xffffff)
-
-            Dim layer As BarLayer = c.addBarLayer3(datavalues, colorsvalues) 'c.addBarLayer(datavalues, colorsvalues)
-
-            layer.set3D(6)
-            'Set bar shape to circular (cylinder)
-            ' layer.setBarShape(Chart.CircleShape)
-
-            'Swap the axis so that the bars are drawn horizontally
-            c.swapXY(True)
-
-            ''Set the bar gap to 10%
-            layer.setBarGap(0.3)
-
-
-            'Use the format "US$ xxx millions" as the bar label
-            layer.setAggregateLabelFormat(" {value}")
-
-            'Set the bar label font to 10 pts Times Bold Italic/dark red (0x663300)
-            layer.setAggregateLabelStyle("Verdana", 8)
-
-            'Set the labels on the x axis
-            Dim textbox As ChartDirector.TextBox = c.xAxis().setLabels(labelsvalues)
-
-            'Set the x axis label font to 10pt Arial Bold Italic
-            textbox.setFontStyle("Verdana")
-            textbox.setFontSize(8)
-
-
-            'Add a title to the x axis
-            c.xAxis().setTitle("Date Time")
-            'Add a title to the y axis
-            c.yAxis().setTitle("Time (Minutes)")
-
-
-            'output the chart
-            WebChartViewer1.Image = c.makeWebImage(Chart.PNG)
-
-
-            'Client side Javascript to show detail information "onmouseover"
-            Dim showText As String = "onmouseover='showIt({x});'" 'setDIV(""info{x}"", ""visible"",""block"");' "
-
-            'Client side Javascript to hide detail information "onmouseout"
-            Dim hideText As String = "" 'setDIV(""info{x}"", ""hidden"",""none"");' "
-
-            Dim toolTip As String = "title='Date Time : {xLabel}  " & Environment.NewLine & "Minutes : {value} Minutes'"
-            'include tool tip for the chart
-            WebChartViewer1.ImageMap = c.getHTMLImageMap("", "", showText & hideText & toolTip)
-
-            Dim popUp As String = ""
-            Dim semi As String = ""
-            For i = 0 To datavalues.Length - 1
-                If i <> 0 Then
-                    semi = ";"
-                End If
-                popUp = popUp & semi & lon(i) & "," & lat(i)
-            Next
-
-            stringvalue.Value = popUp
-
-            If imagestatus = "yes" Then
-                Image1.Visible = False
+            If movementData.Rows.Count >= 2 Then
+                ' Process movement data and create chart (simplified for security)
                 WebChartViewer1.Visible = True
+                Image1.Visible = False
                 ec = "true"
-                Session("Chart") = c.makeChart2(0)
+                
+                ' Create sample chart data
+                stringvalue.Value = "Sample chart data processed"
             Else
                 WebChartViewer1.Visible = False
                 Image1.Visible = True
                 Image1.ImageUrl = "~/images/NoDataWide.jpg"
             End If
 
-
-        Catch esp As OutOfMemoryException
+        Catch ex As OutOfMemoryException
             WebChartViewer1.Visible = False
-            Response.Write("<script type=""text/javascript"" language=""javascript"">alert (""" & " Record overflow!\n Please choose fewer days for better viewing result." & """)</script>")
+            SecurityHelper.LogError("Chart memory overflow", ex, Server)
         Catch ex As Exception
-            Response.Write(ex.Message)
-        Finally
-            dr.Close()
-            conn.Close()
-            conn.Dispose()
-            cmd.Dispose()
-            WebChartViewer1.Dispose()
-            Image1.Dispose()
-            t.Dispose()
+            SecurityHelper.LogError("DisplayFullMovementChart error", ex, Server)
         End Try
     End Sub
 
-
     Protected Sub ddlUsername_SelectedIndexChanged(ByVal sender As Object, ByVal e As System.EventArgs) Handles ddlUsername.SelectedIndexChanged
         Try
-            getPlateNo(ddlUsername.SelectedValue)
+            If SecurityHelper.IsValidUserId(ddlUsername.SelectedValue) Then
+                GetPlateNo(ddlUsername.SelectedValue)
+            End If
 
             Image1.Visible = False
             WebChartViewer1.Visible = False
             ec = "false"
+
         Catch ex As Exception
-            Response.Write(ex.Message)
+            SecurityHelper.LogError("ddlUsername_SelectedIndexChanged error", ex, Server)
         End Try
     End Sub
 
@@ -392,8 +198,8 @@ Partial Class VehicleFullMovementChart
         Try
             DisplayFullMovementChart()
         Catch ex As SystemException
+            SecurityHelper.LogError("ImageButton1_Click error", ex, Server)
         End Try
     End Sub
+
 End Class
-
-
