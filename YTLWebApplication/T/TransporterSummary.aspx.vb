@@ -1,4 +1,4 @@
-﻿Imports System.Data
+Imports System.Data
 Imports System.Data.SqlClient
 
 Partial Class TransporterSummary
@@ -8,14 +8,18 @@ Partial Class TransporterSummary
     Public sb1 As New StringBuilder()
     Public sb2 As New StringBuilder()
     Public tot As Int16 = 0
+    
     Protected Overrides Sub OnInit(ByVal e As System.EventArgs)
         Try
-
-            If Request.Cookies("userinfo") Is Nothing Then
+            ' SECURITY FIX: Enable authentication check
+            If Not SecurityHelper.ValidateUserSession(Request, Session) Then
                 Response.Redirect("Login.aspx")
+                Return
             End If
-        Catch ex As Exception
 
+        Catch ex As Exception
+            SecurityHelper.LogError("TransporterSummary OnInit Error", ex, Server)
+            Response.Redirect("Error.aspx")
         Finally
             MyBase.OnInit(e)
         End Try
@@ -23,8 +27,10 @@ Partial Class TransporterSummary
 
     Protected Sub Page_Load(ByVal sender As Object, ByVal e As System.EventArgs) Handles Me.Load
         Try
-            If Request.Cookies("userinfo") Is Nothing Then
+            ' SECURITY FIX: Validate session
+            If Not SecurityHelper.ValidateUserSession(Request, Session) Then
                 Response.Redirect("Login.aspx")
+                Return
             End If
 
             ImageButton1.Attributes.Add("onclick", "return mysubmit()")
@@ -33,72 +39,86 @@ Partial Class TransporterSummary
             End If
 
         Catch ex As Exception
-            Response.Write(ex.Message)
+            SecurityHelper.LogError("TransporterSummary Page_Load Error", ex, Server)
+            Response.Redirect("Error.aspx")
         End Try
     End Sub
 
     Protected Sub DisplayLogInformation()
         Try
-            Dim begindatetime As String = txtBeginDate.Value & " 00:00:00" ' & ddlbh.SelectedValue & ":" & ddlbm.SelectedValue & ":00"
-            Dim enddatetime As String = txtBeginDate.Value & " 23:59:59" ' & ddleh.SelectedValue & ":" & ddlem.SelectedValue & ":59"
-            Dim colnms As String = ""
-            Dim geonames As String = ""
-            Dim t As New DataTable
-            t.Columns.Add(New DataColumn("Username"))
-            t.Columns.Add(New DataColumn("Plate No"))
-            t.Columns.Add(New DataColumn("counter"))
-            t.Columns.Add(New DataColumn("geofencename"))
-            ec="true"
-            Dim conn As New SqlConnection(System.Configuration.ConfigurationManager.AppSettings("sqlserverconnection"))
-            Dim cmd As SqlCommand = New SqlCommand("sp_GetPlantSummaryAPK", conn)
-            cmd.CommandType = CommandType.StoredProcedure
-            cmd.Parameters.AddWithValue("@begindtime", begindatetime)
-            cmd.Parameters.AddWithValue("@enddtime", enddatetime)
-            cmd.Parameters.AddWithValue("@vtype", 0)
-            Dim da As New SqlDataAdapter(cmd)
-            Dim ds As New DataSet
-            da.Fill(ds, "Tanker")
+            ' SECURITY FIX: Validate date input
+            If Not SecurityHelper.ValidateDate(txtBeginDate.Value) Then
+                Return
+            End If
 
-            cmd = New SqlCommand("sp_GetPlantSummaryAPK", conn)
-            cmd.CommandType = CommandType.StoredProcedure
-            cmd.Parameters.AddWithValue("@begindtime", begindatetime)
-            cmd.Parameters.AddWithValue("@enddtime", enddatetime)
-            cmd.Parameters.AddWithValue("@vtype", 1)
-            da = New SqlDataAdapter(cmd)
-            da.Fill(ds, "CARGO")
+            Dim begindatetime As String = txtBeginDate.Value & " 00:00:00"
+            Dim enddatetime As String = txtBeginDate.Value & " 23:59:59"
+            
+            ec = "true"
+            
+            Dim parameters As New Dictionary(Of String, Object) From {
+                {"@begindtime", begindatetime},
+                {"@enddtime", enddatetime}
+            }
 
-            Dim dtt As DataTable = ds.Tables(0)
-            Dim dtC As DataTable = ds.Tables(1)
-            dtt.Columns.RemoveAt(2)
-            dtC.Columns.RemoveAt(2)
+            ' Load Tanker data
+            parameters.Add("@vtype", 0)
+            Dim tankerQuery As String = "EXEC sp_GetPlantSummaryAPK @begindtime, @enddtime, @vtype"
+            Dim tankerData As DataTable = SecurityHelper.ExecuteSecureQuery(tankerQuery, parameters)
 
-            dtt.Columns.RemoveAt(0)
-            dtC.Columns.RemoveAt(0)
+            ' Load Cargo data
+            parameters("@vtype") = 1
+            Dim cargoQuery As String = "EXEC sp_GetPlantSummaryAPK @begindtime, @enddtime, @vtype"
+            Dim cargoData As DataTable = SecurityHelper.ExecuteSecureQuery(cargoQuery, parameters)
 
-            dtC.Columns("geoname").ColumnName = "CARGO"
-            dtt.Columns("geoname").ColumnName = "TANKER"
+            ' Process and bind data
+            ProcessAndBindData(tankerData, cargoData)
 
-            gvCargo.DataSource = dtC
-            gvTanker.DataSource = dtt
+        Catch ex As Exception
+            SecurityHelper.LogError("DisplayLogInformation Error", ex, Server)
+        End Try
+    End Sub
+
+    Private Sub ProcessAndBindData(tankerData As DataTable, cargoData As DataTable)
+        Try
+            ' Remove unnecessary columns and rename
+            If tankerData.Columns.Count > 2 Then
+                tankerData.Columns.RemoveAt(2)
+                tankerData.Columns.RemoveAt(0)
+                tankerData.Columns("geoname").ColumnName = "TANKER"
+            End If
+
+            If cargoData.Columns.Count > 2 Then
+                cargoData.Columns.RemoveAt(2)
+                cargoData.Columns.RemoveAt(0)
+                cargoData.Columns("geoname").ColumnName = "CARGO"
+            End If
+
+            gvCargo.DataSource = cargoData
+            gvTanker.DataSource = tankerData
 
             gvCargo.DataBind()
             gvTanker.DataBind()
 
+            ' Set border styles for first two rows
+            If gvCargo.Rows.Count > 1 Then
+                gvCargo.Rows(0).BorderStyle = BorderStyle.Double
+                gvCargo.Rows(1).BorderStyle = BorderStyle.Double
+            End If
 
-            gvCargo.Rows(0).BorderStyle = BorderStyle.Double
-            gvTanker.Rows(0).BorderStyle = BorderStyle.Double
+            If gvTanker.Rows.Count > 1 Then
+                gvTanker.Rows(0).BorderStyle = BorderStyle.Double
+                gvTanker.Rows(1).BorderStyle = BorderStyle.Double
+            End If
 
-            gvCargo.Rows(1).BorderStyle = BorderStyle.Double
-            gvTanker.Rows(1).BorderStyle = BorderStyle.Double
             Session.Remove("exceltable")
-
-            Session("exceltable") = dtC
-            Session("exceltable2") = dtt
+            Session.Remove("exceltable2")
+            Session("exceltable") = cargoData
+            Session("exceltable2") = tankerData
 
         Catch ex As Exception
-            Response.Write(ex.Message)
+            SecurityHelper.LogError("ProcessAndBindData Error", ex, Server)
         End Try
-
     End Sub
 
     Protected Sub ImageButton1_Click(ByVal sender As Object, ByVal e As System.EventArgs) Handles ImageButton1.Click
@@ -106,39 +126,28 @@ Partial Class TransporterSummary
     End Sub
 
     Protected Sub gvCargo_RowDataBound(sender As Object, e As GridViewRowEventArgs)
-        If e.Row.RowType = DataControlRowType.DataRow Then
-            For i As Integer = 0 To e.Row.Cells.Count - 1
-                Dim encoded As String = e.Row.Cells(i).Text
-                e.Row.Cells(i).Text = Context.Server.HtmlDecode(encoded)
-            Next
-            Try
-                If e.Row.RowType = DataControlRowType.Footer Then
-                    For Each row As GridViewRow In gvCargo.Rows
-                        For i As Integer = 6 To gvCargo.Columns.Count
-                            If Not String.IsNullOrEmpty(row.Cells(i).Text) Then
-                                tot = tot + Convert.ToInt32(row.Cells(i).Text)
-                            End If
-
-                            Dim label As Label = New Label()
-                            e.Row.Cells(i).Text = tot.ToString()
-                            label.Text = "Total" & " " & tot
-                            e.Row.Cells(i).Controls.Add(label)
-                        Next
-                    Next
-                End If
-                'tot = tot + Convert.ToInt32(e.Row.Cells(1).Text)
-            Catch ex As Exception
-                Response.Write(ex.Message)
-            End Try
-
-        End If
+        Try
+            If e.Row.RowType = DataControlRowType.DataRow Then
+                For i As Integer = 0 To e.Row.Cells.Count - 1
+                    Dim encoded As String = SecurityHelper.HtmlEncode(e.Row.Cells(i).Text)
+                    e.Row.Cells(i).Text = encoded
+                Next
+            End If
+        Catch ex As Exception
+            SecurityHelper.LogError("gvCargo_RowDataBound Error", ex, Server)
+        End Try
     End Sub
+    
     Protected Sub gvTanker_RowDataBound(sender As Object, e As GridViewRowEventArgs)
-        If e.Row.RowType = DataControlRowType.DataRow Then
-            For i As Integer = 0 To e.Row.Cells.Count - 1
-                Dim encoded As String = e.Row.Cells(i).Text
-                e.Row.Cells(i).Text = Context.Server.HtmlDecode(encoded)
-            Next
-        End If
+        Try
+            If e.Row.RowType = DataControlRowType.DataRow Then
+                For i As Integer = 0 To e.Row.Cells.Count - 1
+                    Dim encoded As String = SecurityHelper.HtmlEncode(e.Row.Cells(i).Text)
+                    e.Row.Cells(i).Text = encoded
+                Next
+            End If
+        Catch ex As Exception
+            SecurityHelper.LogError("gvTanker_RowDataBound Error", ex, Server)
+        End Try
     End Sub
 End Class
