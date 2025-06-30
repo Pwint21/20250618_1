@@ -4,35 +4,40 @@ Imports System.Text.RegularExpressions
 Imports System.Data
 
 Public Class DatabaseHelper
-    Private Shared ReadOnly ConnectionString As String = ConfigurationManager.ConnectionStrings("DefaultConnection").ConnectionString
+    Private Shared ReadOnly ConnectionString As String = ConfigurationManager.ConnectionStrings("sqlserverconnection").ConnectionString
 
     ' Execute parameterized query safely
-    Public Shared Function ExecuteQuery(query As String, parameters As Dictionary(Of String, Object)) As DataTable
+    Public Shared Function ExecuteQuery(query As String, parameters As Dictionary(Of String, Object), Optional connectionStringName As String = "sqlserverconnection") As DataTable
         Dim dataTable As New DataTable()
-        
+
         Try
-            Using connection As New SqlConnection(ConnectionString)
+            ' Get the connection string dynamically from config
+            Dim connectionString As String = System.Configuration.ConfigurationManager.AppSettings(connectionStringName)
+
+            Using connection As New SqlConnection(connectionString)
                 Using command As New SqlCommand(query, connection)
-                    ' Add parameters
+                    ' Add parameters if any
                     If parameters IsNot Nothing Then
                         For Each param In parameters
                             command.Parameters.AddWithValue(param.Key, If(param.Value, DBNull.Value))
                         Next
                     End If
-                    
+
                     connection.Open()
                     Using adapter As New SqlDataAdapter(command)
                         adapter.Fill(dataTable)
                     End Using
                 End Using
             End Using
+
         Catch ex As Exception
             SecurityHelper.LogError("Database query failed", ex, Nothing)
             Throw New DatabaseException("Database operation failed", ex)
         End Try
-        
+
         Return dataTable
     End Function
+
 
     ' Execute non-query with parameters
     Public Shared Function ExecuteNonQuery(query As String, parameters As Dictionary(Of String, Object)) As Integer

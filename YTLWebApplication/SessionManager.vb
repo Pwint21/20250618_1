@@ -1,3 +1,5 @@
+Imports System.Security
+Imports System.Web
 Imports System.Web.SessionState
 
 Public Class SessionManager
@@ -9,10 +11,10 @@ Public Class SessionManager
         Try
             ' Clear any existing session
             HttpContext.Current.Session.Clear()
-            
+
             ' Generate session token
             Dim sessionToken As String = Guid.NewGuid().ToString()
-            
+
             ' Set session values
             With HttpContext.Current.Session
                 .Item("authenticated") = True
@@ -28,10 +30,10 @@ Public Class SessionManager
                 .Item("userAgent") = HttpContext.Current.Request.UserAgent
                 .Timeout = SESSION_TIMEOUT_MINUTES
             End With
-            
+
             ' Log session creation
             LogSessionActivity("Session created", userId, sessionToken)
-            
+
         Catch ex As Exception
             SecurityHelper.LogError("Session creation failed", ex, HttpContext.Current.Server)
             Throw New SecurityException("Session creation failed")
@@ -43,12 +45,12 @@ Public Class SessionManager
         Try
             Dim session As HttpSessionState = HttpContext.Current.Session
             Dim request As HttpRequest = HttpContext.Current.Request
-            
+
             ' Check if session exists and is authenticated
             If session("authenticated") Is Nothing OrElse Not CBool(session("authenticated")) Then
                 Return False
             End If
-            
+
             ' Check session timeout
             If session("lastActivity") IsNot Nothing Then
                 Dim lastActivity As DateTime = CDate(session("lastActivity"))
@@ -57,7 +59,7 @@ Public Class SessionManager
                     Return False
                 End If
             End If
-            
+
             ' Check maximum session duration
             If session("loginTime") IsNot Nothing Then
                 Dim loginTime As DateTime = CDate(session("loginTime"))
@@ -66,18 +68,18 @@ Public Class SessionManager
                     Return False
                 End If
             End If
-            
+
             ' Validate IP address (optional - can cause issues with load balancers)
             'If session("ipAddress") IsNot Nothing AndAlso session("ipAddress").ToString() <> request.UserHostAddress Then
             '    DestroySession("IP address mismatch")
             '    Return False
             'End If
-            
+
             ' Update last activity
             session("lastActivity") = DateTime.Now
-            
+
             Return True
-            
+
         Catch ex As Exception
             SecurityHelper.LogError("Session validation failed", ex, HttpContext.Current.Server)
             Return False
@@ -90,18 +92,18 @@ Public Class SessionManager
             Dim session As HttpSessionState = HttpContext.Current.Session
             Dim userId As String = If(session("userId"), "Unknown").ToString()
             Dim sessionToken As String = If(session("sessionToken"), "Unknown").ToString()
-            
+
             ' Log session destruction
             LogSessionActivity($"Session destroyed: {reason}", userId, sessionToken)
-            
+
             ' Clear session
             session.Clear()
             session.Abandon()
-            
+
             ' Clear authentication cookies
             ClearAuthenticationCookies()
-            
-        Catch ex As Exception
+
+        Catch ex As HttpException
             SecurityHelper.LogError("Session destruction failed", ex, HttpContext.Current.Server)
         End Try
     End Sub
@@ -143,7 +145,7 @@ Public Class SessionManager
     Private Shared Sub ClearAuthenticationCookies()
         Try
             Dim response As HttpResponse = HttpContext.Current.Response
-            
+
             ' Clear userinfo cookie
             Dim userinfoCookie As New HttpCookie("userinfo") With {
                 .Expires = DateTime.Now.AddDays(-1),
@@ -152,7 +154,7 @@ Public Class SessionManager
                 .Secure = HttpContext.Current.Request.IsSecureConnection
             }
             response.Cookies.Add(userinfoCookie)
-            
+
             ' Clear accesslevel cookie
             Dim accessCookie As New HttpCookie("accesslevel") With {
                 .Expires = DateTime.Now.AddDays(-1),
@@ -161,7 +163,7 @@ Public Class SessionManager
                 .Secure = HttpContext.Current.Request.IsSecureConnection
             }
             response.Cookies.Add(accessCookie)
-            
+
         Catch ex As Exception
             SecurityHelper.LogError("Cookie clearing failed", ex, HttpContext.Current.Server)
         End Try
