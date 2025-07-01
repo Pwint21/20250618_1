@@ -1,4 +1,4 @@
-﻿Imports System
+Imports System
 Imports System.Collections.Generic
 Imports System.Web
 Imports System.Web.UI
@@ -10,47 +10,65 @@ Imports System.Diagnostics
 
 Partial Class VehicleLogChartMap
     Inherits System.Web.UI.Page
+    
     Protected Overrides Sub OnInit(ByVal e As System.EventArgs)
         Try
-
-            If Request.Cookies("userinfo") Is Nothing Then
+            ' SECURITY FIX: Enable authentication check
+            If Not SecurityHelper.ValidateUserSession(Request, Session) Then
                 Response.Redirect("Login.aspx")
+                Return
             End If
 
-            Dim userid As String = Request.Cookies("userinfo")("userid")
-            Dim role As String = Request.Cookies("userinfo")("role")
-            Dim userslist As String = Request.Cookies("userinfo")("userslist")
+            ' SECURITY FIX: Get validated user information
+            Dim userid As String = SecurityHelper.ValidateAndGetUserId(Request)
+            Dim role As String = SecurityHelper.ValidateAndGetUserRole(Request)
+            Dim userslist As String = SecurityHelper.ValidateAndGetUsersList(Request)
 
-            Dim suserid As String = Request.QueryString("userid")
+            ' SECURITY FIX: Validate query string parameter
+            Dim suserid As String = SecurityHelper.SanitizeString(Request.QueryString("userid"), 50)
 
-
-            Dim conn As New SqlConnection(System.Configuration.ConfigurationManager.AppSettings("sqlserverconnection"))
-            Dim cmd As SqlCommand = New SqlCommand("select userid,username from userTBL where role='User' order by username", conn)
-            Dim dr As SqlDataReader
-
+            Dim query As String
+            Dim param As New Dictionary(Of String, Object)
+            
             If role = "User" Then
-                cmd = New SqlCommand("select userid,username from userTBL where userid='" & userid & "' order by username", conn)
+                query = "select userid,username from userTBL where userid=@userid order by username"
+                param.Add("@userid", userid)
             ElseIf role = "SuperUser" Or role = "Operator" Then
-                cmd = New SqlCommand("select userid,username from userTBL where userid in(" & userslist & ") order by username", conn)
+                ' SECURITY FIX: Validate userslist and use safe query construction
+                If SecurityHelper.IsValidUsersList(userslist) Then
+                    Dim userIds() As String = userslist.Split(","c)
+                    Dim parameters As New List(Of String)
+                    
+                    For i As Integer = 0 To userIds.Length - 1
+                        Dim paramName As String = "@userid" & i
+                        parameters.Add(paramName)
+                        param.Add(paramName, userIds(i).Trim())
+                    Next
+                    
+                    Dim inClause As String = String.Join(",", parameters)
+                    query = $"select userid,username from userTBL WHERE userid IN ({inClause}) order by username"
+                Else
+                    query = "select userid,username from userTBL where userid=@userid order by username"
+                    param.Add("@userid", userid)
+                End If
+            Else
+                query = "select userid,username from userTBL where role='User' order by username"
             End If
 
-            conn.Open()
-            dr = cmd.ExecuteReader()
             user_lists.Items.Add(New ListItem("-- SELECT USER --", 0))
-            While dr.Read()
-                user_lists.Items.Add(New ListItem(dr("username").ToString().ToUpper(), dr("userid")))
-            End While
-            conn.Close()
-
-
-
+            
+            Dim dt As DataTable = SecurityHelper.ExecuteSecureQuery(query, param)
+            If dt.Rows.Count > 0 Then
+                For Each dr As DataRow In dt.Rows
+                    user_lists.Items.Add(New ListItem(SecurityHelper.HtmlEncode(dr("username").ToString().ToUpper()), dr("userid").ToString()))
+                Next
+            End If
 
         Catch ex As Exception
-
+            SecurityHelper.LogError("VehicleLogChartMap OnInit Error", ex, Server)
+            Response.Redirect("Error.aspx")
         Finally
-
             MyBase.OnInit(e)
-
         End Try
     End Sub
 End Class
